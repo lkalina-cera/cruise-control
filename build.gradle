@@ -271,6 +271,7 @@ project(':cruise-control') {
     testImplementation 'org.apache.httpcomponents:httpclient:4.5.13:tests'
     testImplementation 'org.bouncycastle:bcpkix-jdk15on:1.69'
     testImplementation 'org.apache.kerby:kerb-simplekdc:2.0.1'
+    testImplementation 'com.jayway.jsonpath:json-path:2.4.0'
 
     implementation group: 'com.google.code.findbugs', name: 'jsr305', version: '3.0.2'
 
