@@ -47,19 +47,16 @@ import org.junit.Test;
 import static com.linkedin.kafka.cruisecontrol.common.TestConstants.TOPIC0;
 
 
-public class BrokerFailureIntegrationTest extends CruiseControlIntegrationTestHarness {
+public class TopicAnomalyIntegrationTest extends CruiseControlIntegrationTestHarness {
 
-  private static final int PARTITION_COUNT = 10;
-  private static final int KAFKA_CLUSTER_SIZE = 4;
+  private static final int PARTITION_COUNT = 2;
+  private static final int KAFKA_CLUSTER_SIZE = 3;
   private static final String CRUISE_CONTROL_KAFKA_CLUSTER_STATE_ENDPOINT =
       "kafkacruisecontrol/" + CruiseControlEndPoint.KAFKA_CLUSTER_STATE + "?verbose=true&json=true";
-  private static final String CRUISE_CONTROL_STATE_ENDPOINT =
-          "kafkacruisecontrol/" + CruiseControlEndPoint.STATE + "?substates=analyzer&json=true";
   private static final Random RANDOM = new Random(0xDEADBEEF);
   private final Configuration _gsonJsonConfig =
       Configuration.builder().jsonProvider(new JacksonJsonProvider())
           .mappingProvider(new JacksonMappingProvider()).build();
-  private static final int BROKER_ID_TO_REMOVE = 1;
 
   @Before
   public void setup() throws Exception {
@@ -112,12 +109,13 @@ public class BrokerFailureIntegrationTest extends CruiseControlIntegrationTestHa
     configs.put(KafkaSampleStore.BROKER_SAMPLE_STORE_TOPIC_PARTITION_COUNT_CONFIG, "2");
     configs.put(
         TopicReplicationFactorAnomalyFinder.SELF_HEALING_TARGET_TOPIC_REPLICATION_FACTOR_CONFIG,
-        "2");
+        "3");
     configs.put(AnomalyDetectorConfig.RF_SELF_HEALING_SKIP_RACK_AWARENESS_CHECK_CONFIG, "true");
     configs.put(
         AnomalyDetectorConfig.ANOMALY_DETECTION_GOALS_CONFIG,
         "com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaCapacityGoal," 
-        + "com.linkedin.kafka.cruisecontrol.analyzer.goals.DiskCapacityGoal");
+        + "com.linkedin.kafka.cruisecontrol.analyzer.goals.DiskCapacityGoal,"
+        + "com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaDistributionGoal");
 
     String defaultGoalsValues = "com.linkedin.kafka.cruisecontrol.analyzer.goals.MinTopicLeadersPerBrokerGoal,"
         + "com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaCapacityGoal,"
@@ -132,7 +130,7 @@ public class BrokerFailureIntegrationTest extends CruiseControlIntegrationTestHa
   }
 
   @Test
-  public void testBrokerFailure() throws ExecutionException, InterruptedException {
+  public void testTopicAnomalyFinder() throws ExecutionException, InterruptedException {
     AdminClient adminClient = KafkaCruiseControlUtils.createAdminClient(Collections
         .singletonMap(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, broker(0).plaintextAddr()));
     try {
@@ -145,7 +143,7 @@ public class BrokerFailureIntegrationTest extends CruiseControlIntegrationTestHa
     // wait until metadata propagates to Cruise Control
     KafkaCruiseControlIntegrationTestUtils.waitForConditionMeet(() -> {
         String responseMessage = KafkaCruiseControlIntegrationTestUtils
-          .callCruiseControl(_app.serverUrl(), CRUISE_CONTROL_KAFKA_CLUSTER_STATE_ENDPOINT);
+            .callCruiseControl(_app.serverUrl(), CRUISE_CONTROL_KAFKA_CLUSTER_STATE_ENDPOINT);
         JSONArray partitionLeadersArray = JsonPath.read(responseMessage,
             "$.KafkaPartitionState.other[?(@.topic == '" + TOPIC0 + "')].leader");
         List<Integer> partitionLeaders = JsonPath.parse(partitionLeadersArray, _gsonJsonConfig)
@@ -155,26 +153,17 @@ public class BrokerFailureIntegrationTest extends CruiseControlIntegrationTestHa
 
     produceRandomDataToTopic(TOPIC0, 4000);
 
-    // wait for a valid proposal
-    KafkaCruiseControlIntegrationTestUtils.waitForConditionMeet(() -> {
-      String responseMessage = KafkaCruiseControlIntegrationTestUtils
-          .callCruiseControl(_app.serverUrl(), CRUISE_CONTROL_STATE_ENDPOINT);
-      return JsonPath.<Boolean>read(responseMessage, "AnalyzerState.isProposalReady");
-    }, 200, Duration.ofSeconds(15), new AssertionError("No proposals were ready"));
-
-    // shut down a broker to initiate a self-healing action
-    broker(BROKER_ID_TO_REMOVE).shutdown();
-
+    // wait until new replicas appear for the topic
     KafkaCruiseControlIntegrationTestUtils.waitForConditionMeet(() -> {
       String responseMessage = KafkaCruiseControlIntegrationTestUtils
           .callCruiseControl(_app.serverUrl(), CRUISE_CONTROL_KAFKA_CLUSTER_STATE_ENDPOINT);
-        Integer brokers = JsonPath.<Integer>read(responseMessage, "KafkaBrokerState.Summary.Brokers");
-        JSONArray partitionLeadersArray = JsonPath.read(responseMessage,
-            "$.KafkaPartitionState.other[?(@.topic == '" + TOPIC0 + "')].leader");
-        List<Integer> partitionLeaders = JsonPath.parse(partitionLeadersArray, _gsonJsonConfig)
-            .read("$.*", new TypeRef<>() { });
-        return partitionLeaders.size() == PARTITION_COUNT && brokers == KAFKA_CLUSTER_SIZE - 1;
-    }, 200, new AssertionError("Topic replicas not fixed after broker removed"));
+      JSONArray topicReplicas = JsonPath.read(responseMessage,
+          "$.KafkaPartitionState.other[?(@.topic == '" + TOPIC0 + "')].replicas");
+      List<List<Integer>> partitionLeaders = JsonPath.parse(topicReplicas, _gsonJsonConfig)
+          .read("$.*", new TypeRef<>() { });
+      return partitionLeaders.stream().allMatch(i -> i.size() == 3);
+    }, 200, Duration.ofSeconds(15), new AssertionError("Replica count not match"));
+
   }
 
   private void produceRandomDataToTopic(String topic, int produceSize) throws ExecutionException, InterruptedException {
