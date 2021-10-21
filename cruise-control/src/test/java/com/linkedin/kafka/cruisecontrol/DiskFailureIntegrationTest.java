@@ -7,41 +7,34 @@ package com.linkedin.kafka.cruisecontrol;
 
 import java.io.File;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
+import java.util.Map.Entry;
 import java.util.StringJoiner;
-import java.util.concurrent.ExecutionException;
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.TypeRef;
 import com.jayway.jsonpath.spi.json.JacksonJsonProvider;
 import com.jayway.jsonpath.spi.mapper.JacksonMappingProvider;
-import com.linkedin.kafka.cruisecontrol.analyzer.goals.MinTopicLeadersPerBrokerGoal;
+import com.linkedin.kafka.cruisecontrol.analyzer.goals.DiskCapacityGoal;
 import com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaCapacityGoal;
+import com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaDistributionGoal;
+import com.linkedin.kafka.cruisecontrol.analyzer.goals.TopicReplicaDistributionGoal;
 import com.linkedin.kafka.cruisecontrol.config.constants.AnalyzerConfig;
 import com.linkedin.kafka.cruisecontrol.config.constants.AnomalyDetectorConfig;
-import com.linkedin.kafka.cruisecontrol.config.constants.MonitorConfig;
 import com.linkedin.kafka.cruisecontrol.detector.TopicReplicationFactorAnomalyFinder;
-import com.linkedin.kafka.cruisecontrol.detector.notifier.SelfHealingNotifier;
-import com.linkedin.kafka.cruisecontrol.metricsreporter.CruiseControlMetricsReporterConfig;
 import com.linkedin.kafka.cruisecontrol.metricsreporter.utils.CCKafkaTestUtils;
-import com.linkedin.kafka.cruisecontrol.monitor.sampling.KafkaSampleStore;
+import com.linkedin.kafka.cruisecontrol.servlet.CruiseControlEndPoint;
 import kafka.server.KafkaConfig;
 import net.minidev.json.JSONArray;
 import org.apache.commons.io.FileUtils;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.Producer;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.security.auth.SecurityProtocol;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -52,16 +45,19 @@ import static com.linkedin.kafka.cruisecontrol.servlet.CruiseControlEndPoint.KAF
 
 public class DiskFailureIntegrationTest extends CruiseControlIntegrationTestHarness {
 
-  private static final int PARTITION_COUNT = 2;
+  private static final int PARTITION_COUNT = 3;
   private static final int KAFKA_CLUSTER_SIZE = 3;
   private static final String CRUISE_CONTROL_KAFKA_CLUSTER_STATE_ENDPOINT =
       "kafkacruisecontrol/" + KAFKA_CLUSTER_STATE + "?verbose=true&json=true";
-  private static final Random RANDOM = new Random(0xDEADBEEF);
+  private static final String CRUISE_CONTROL_STATE_ENDPOINT =
+      "kafkacruisecontrol/" + CruiseControlEndPoint.STATE + "?substates=anomaly_detector&json=true";
+  private static final String CRUISE_CONTROL_ANALYZER_STATE_ENDPOINT =
+      "kafkacruisecontrol/" + CruiseControlEndPoint.STATE + "?substates=analyzer&json=true";
   private static final Configuration GSON_JSON_CONFIG =
       Configuration.builder().jsonProvider(new JacksonJsonProvider())
           .mappingProvider(new JacksonMappingProvider()).build();
 
-  private List<File> _brokerLogDirs = new ArrayList<>(KAFKA_CLUSTER_SIZE);
+  private List<Entry<File, File>> _brokerLogDirs = new ArrayList<>(KAFKA_CLUSTER_SIZE);
   
   @Before
   public void setup() throws Exception {
@@ -80,61 +76,28 @@ public class DiskFailureIntegrationTest extends CruiseControlIntegrationTestHarn
 
   @Override
   public Map<Object, Object> overridingProps() {
-    File logDir = CCKafkaTestUtils.newTempDir();
-    _brokerLogDirs.add(logDir);
-    Map<Object, Object> props = new HashMap<>();
-    props.put("metric.reporters",
-        "com.linkedin.kafka.cruisecontrol.metricsreporter.CruiseControlMetricsReporter");
-    StringJoiner csvJoiner = new StringJoiner(",");
-    csvJoiner.add(SecurityProtocol.PLAINTEXT.name + "://localhost:"
-        + KafkaCruiseControlIntegrationTestUtils.findRandomOpenPortOnAllLocalInterfaces());
-    props.put(KafkaConfig.ListenersProp(), csvJoiner.toString());
-    props.put(KafkaConfig.LogDirProp(), logDir.getAbsolutePath());
-    props.put(CruiseControlMetricsReporterConfig.CRUISE_CONTROL_METRICS_TOPIC_AUTO_CREATE_CONFIG, "true");
-    props.put(CruiseControlMetricsReporterConfig.CRUISE_CONTROL_METRICS_TOPIC_REPLICATION_FACTOR_CONFIG, "2");
-    props.put(CruiseControlMetricsReporterConfig.CRUISE_CONTROL_METRICS_TOPIC_NUM_PARTITIONS_CONFIG, "1");
+    Map<Object, Object> props = KafkaCruiseControlIntegrationTestUtils.createBrokerProps();
+    Entry<File, File> logFolders = Map.entry(CCKafkaTestUtils.newTempDir(), CCKafkaTestUtils.newTempDir());
+    _brokerLogDirs.add(logFolders);
+    props.put(KafkaConfig.LogDirsProp(), logFolders.getKey().getAbsolutePath() + "," + logFolders.getValue().getAbsolutePath());
     return props;
   }
 
   @Override
   protected Map<String, Object> withConfigs() {
-    Map<String, Object> configs = new HashMap<>();
-    configs.put(MonitorConfig.METRIC_SAMPLER_CLASS_CONFIG,
-        "com.linkedin.kafka.cruisecontrol.monitor.sampling.CruiseControlMetricsReporterSampler");
-    configs.put(AnomalyDetectorConfig.METRIC_ANOMALY_FINDER_CLASSES_CONFIG,
-        "com.linkedin.kafka.cruisecontrol.detector.KafkaMetricAnomalyFinder");
-    configs.put(SelfHealingNotifier.SELF_HEALING_ENABLED_CONFIG, "true");
-    configs.put(AnomalyDetectorConfig.TOPIC_ANOMALY_FINDER_CLASSES_CONFIG,
-        "com.linkedin.kafka.cruisecontrol.detector.TopicReplicationFactorAnomalyFinder");
-    configs.put(AnomalyDetectorConfig.ANOMALY_NOTIFIER_CLASS_CONFIG,
-        "com.linkedin.kafka.cruisecontrol.detector.notifier.SelfHealingNotifier");
-    configs.put(SelfHealingNotifier.BROKER_FAILURE_ALERT_THRESHOLD_MS_CONFIG, "1000");
-    configs.put(SelfHealingNotifier.BROKER_FAILURE_SELF_HEALING_THRESHOLD_MS_CONFIG, "1500");
-    
-    configs.put(MonitorConfig.BROKER_METRICS_WINDOW_MS_CONFIG, "36000");
-    configs.put(MonitorConfig.PARTITION_METRICS_WINDOW_MS_CONFIG, "36000");
-    configs.put(MonitorConfig.NUM_PARTITION_METRICS_WINDOWS_CONFIG, "3");
-    configs.put(KafkaSampleStore.PARTITION_SAMPLE_STORE_TOPIC_PARTITION_COUNT_CONFIG, "2");
-    configs.put(KafkaSampleStore.BROKER_SAMPLE_STORE_TOPIC_PARTITION_COUNT_CONFIG, "2");
-    
-    configs.put(
-        TopicReplicationFactorAnomalyFinder.SELF_HEALING_TARGET_TOPIC_REPLICATION_FACTOR_CONFIG,
-        "2");
-    configs.put(AnomalyDetectorConfig.RF_SELF_HEALING_SKIP_RACK_AWARENESS_CHECK_CONFIG, "true");
-    configs.put(
-        AnomalyDetectorConfig.ANOMALY_DETECTION_GOALS_CONFIG,
-        "com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaCapacityGoal," 
-        + "com.linkedin.kafka.cruisecontrol.analyzer.goals.DiskCapacityGoal");
+    Map<String, Object> configs = KafkaCruiseControlIntegrationTestUtils.ccConfigOverrides();
+    configs.put(TopicReplicationFactorAnomalyFinder.SELF_HEALING_TARGET_TOPIC_REPLICATION_FACTOR_CONFIG, "3");
+    configs.put(AnomalyDetectorConfig.ANOMALY_DETECTION_GOALS_CONFIG, new StringJoiner(",")
+        .add(ReplicaCapacityGoal.class.getName())
+        .add(DiskCapacityGoal.class.getName()).toString());
 
-    String defaultGoalsValues = "com.linkedin.kafka.cruisecontrol.analyzer.goals.MinTopicLeadersPerBrokerGoal,"
-        + "com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaCapacityGoal,"
-        + "com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaDistributionGoal,"
-        + "com.linkedin.kafka.cruisecontrol.analyzer.goals.TopicReplicaDistributionGoal";
-    configs.put(AnalyzerConfig.DEFAULT_GOALS_CONFIG, defaultGoalsValues);
+    configs.put(AnalyzerConfig.DEFAULT_GOALS_CONFIG, new StringJoiner(",")
+        .add(ReplicaCapacityGoal.class.getName())
+        .add(ReplicaDistributionGoal.class.getName())
+        .add(TopicReplicaDistributionGoal.class.getName()).toString());
     
     configs.put(AnalyzerConfig.HARD_GOALS_CONFIG, new StringJoiner(",")
-        .add(ReplicaCapacityGoal.class.getName())
-        .add(MinTopicLeadersPerBrokerGoal.class.getName()).toString());
+        .add(ReplicaCapacityGoal.class.getName()).toString());
     
     return configs;
   }
@@ -153,45 +116,50 @@ public class DiskFailureIntegrationTest extends CruiseControlIntegrationTestHarn
     KafkaCruiseControlIntegrationTestUtils.waitForConditionMeet(() -> {
       String responseMessage = KafkaCruiseControlIntegrationTestUtils
           .callCruiseControl(_app.serverUrl(), CRUISE_CONTROL_KAFKA_CLUSTER_STATE_ENDPOINT);
-        JSONArray partitionLeadersArray = JsonPath.<JSONArray>read(responseMessage,
-            "$.KafkaPartitionState.other[?(@.topic == '" + TOPIC0 + "')].leader");
-        List<Integer> partitionLeaders = JsonPath.parse(partitionLeadersArray, GSON_JSON_CONFIG)
-            .read("$.*", new TypeRef<List<Integer>>() { });
-        return partitionLeaders.size() == PARTITION_COUNT;
+      JSONArray partitionLeadersArray = JsonPath.<JSONArray>read(responseMessage,
+          "$.KafkaPartitionState.other[?(@.topic == '" + TOPIC0 + "')].leader");
+      List<Integer> partitionLeaders = JsonPath.parse(partitionLeadersArray, GSON_JSON_CONFIG)
+          .read("$.*", new TypeRef<List<Integer>>() { });
+      return partitionLeaders.size() == PARTITION_COUNT;
     }, 20, new AssertionError("Topic partitions not found for " + TOPIC0));
 
-    produceRandomDataToTopic(TOPIC0, 5, 400);
-
-    File file = _brokerLogDirs.get(0);
+    KafkaCruiseControlIntegrationTestUtils.produceRandomDataToTopic(TOPIC0, 5, 400, KafkaCruiseControlIntegrationTestUtils
+        .getDefaultProducerProperties(bootstrapServers()));
+    // wait for a valid proposal
+    KafkaCruiseControlIntegrationTestUtils.waitForConditionMeet(() -> {
+      String responseMessage = KafkaCruiseControlIntegrationTestUtils
+          .callCruiseControl(_app.serverUrl(), CRUISE_CONTROL_ANALYZER_STATE_ENDPOINT);
+      return JsonPath.<Boolean>read(responseMessage, "AnalyzerState.isProposalReady");
+    }, 200, Duration.ofSeconds(15), new AssertionError("No proposal available"));
+    
+    Entry<File, File> entry = _brokerLogDirs.get(0);
     //The test fails here
-    FileUtils.deleteDirectory(file);
+    FileUtils.deleteDirectory(entry.getKey());
     
     KafkaCruiseControlIntegrationTestUtils.waitForConditionMeet(() -> {
-        String responseMessage = KafkaCruiseControlIntegrationTestUtils
-            .callCruiseControl(_app.serverUrl(), CRUISE_CONTROL_KAFKA_CLUSTER_STATE_ENDPOINT);
-        Integer brokers = JsonPath.<Integer>read(responseMessage, "KafkaBrokerState.Summary.Brokers");
-        JSONArray partitionLeadersArray = JsonPath.<JSONArray>read(responseMessage,
-            "$.KafkaPartitionState.other[?(@.topic == '" + TOPIC0 + "')].leader");
-        List<Integer> partitionLeaders = JsonPath.parse(partitionLeadersArray, GSON_JSON_CONFIG)
-            .read("$.*", new TypeRef<List<Integer>>() { });
-        return partitionLeaders.size() == PARTITION_COUNT && brokers == 3;
-    }, 200, new AssertionError("Topic replicas not fixed after broker removed"));
-  }
-
-  private void produceRandomDataToTopic(String topic, int messageCount, int produceSize) {
-    if (produceSize > 0 && messageCount > 0) {
-      try (Producer<String, String> producer = new KafkaProducer<>(KafkaCruiseControlIntegrationTestUtils
-          .getDefaultProducerProperties(bootstrapServers()))) {
-        byte[] randomRecords = new byte[produceSize];
-        for (int i = 0; i < messageCount; i++) {
-          RANDOM.nextBytes(randomRecords);
-          RecordMetadata recordMetadata = producer.send(new ProducerRecord<>(topic, Arrays.toString(randomRecords))).get();
-          System.out.println(recordMetadata);
-        }
-      } catch (InterruptedException | ExecutionException e) {
-        throw new RuntimeException(e);
-      }
-    }
+      String responseMessage = KafkaCruiseControlIntegrationTestUtils
+          .callCruiseControl(_app.serverUrl(), CRUISE_CONTROL_KAFKA_CLUSTER_STATE_ENDPOINT);
+      Integer offlineReplicas = JsonPath.read(responseMessage,
+          "$.KafkaBrokerState.OfflineReplicaCountByBrokerId." + 0);
+      return offlineReplicas > 0;
+    }, 100, new AssertionError("Offline replicas not detected"));
+    
+    KafkaCruiseControlIntegrationTestUtils.waitForConditionMeet(() -> {
+      String responseMessage = KafkaCruiseControlIntegrationTestUtils
+          .callCruiseControl(_app.serverUrl(), CRUISE_CONTROL_STATE_ENDPOINT);
+      JSONArray diskFailuresArray = JsonPath.read(responseMessage,
+            "$.AnomalyDetectorState.recentDiskFailures[*].anomalyId");
+      return diskFailuresArray.size() == 1;
+    }, 50, new AssertionError("Disk failure anomaly not detected"));
+    
+    KafkaCruiseControlIntegrationTestUtils.waitForConditionMeet(() -> {
+      String responseMessage = KafkaCruiseControlIntegrationTestUtils
+          .callCruiseControl(_app.serverUrl(), CRUISE_CONTROL_KAFKA_CLUSTER_STATE_ENDPOINT);
+      Map<String, String> offlineReplicas = JsonPath.read(responseMessage,
+            "$.KafkaBrokerState.OfflineReplicaCountByBrokerId");
+      return offlineReplicas.isEmpty();
+    }, 200, new AssertionError("There are still offline replica on broker"));
+    
   }
 
 }
