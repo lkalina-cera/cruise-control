@@ -14,15 +14,15 @@ import java.util.concurrent.ExecutionException;
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.TypeRef;
-import com.jayway.jsonpath.spi.json.JacksonJsonProvider;
-import com.jayway.jsonpath.spi.mapper.JacksonMappingProvider;
 import com.linkedin.kafka.cruisecontrol.analyzer.goals.DiskCapacityGoal;
 import com.linkedin.kafka.cruisecontrol.analyzer.goals.MinTopicLeadersPerBrokerGoal;
 import com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaCapacityGoal;
 import com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaDistributionGoal;
 import com.linkedin.kafka.cruisecontrol.config.constants.AnalyzerConfig;
 import com.linkedin.kafka.cruisecontrol.config.constants.AnomalyDetectorConfig;
+import com.linkedin.kafka.cruisecontrol.config.constants.MonitorConfig;
 import com.linkedin.kafka.cruisecontrol.detector.TopicReplicationFactorAnomalyFinder;
+import com.linkedin.kafka.cruisecontrol.metricsreporter.CruiseControlMetricsReporterConfig;
 import com.linkedin.kafka.cruisecontrol.metricsreporter.utils.CCEmbeddedBroker;
 import com.linkedin.kafka.cruisecontrol.servlet.CruiseControlEndPoint;
 import net.minidev.json.JSONArray;
@@ -46,9 +46,7 @@ public class ReplicaCapcaityViolationIntegrationTest extends CruiseControlIntegr
       "kafkacruisecontrol/" + KAFKA_CLUSTER_STATE + "?verbose=true&json=true";
   private static final String CRUISE_CONTROL_STATE_ENDPOINT =
       "kafkacruisecontrol/" + CruiseControlEndPoint.STATE + "?substates=anomaly_detector&json=true";
-  private final Configuration _gsonJsonConfig =
-      Configuration.builder().jsonProvider(new JacksonJsonProvider())
-          .mappingProvider(new JacksonMappingProvider()).build();
+  private final Configuration _gsonJsonConfig = KafkaCruiseControlIntegrationTestUtils.createJsonMappingConfig();
 
   @Before
   public void setup() throws Exception {
@@ -67,10 +65,9 @@ public class ReplicaCapcaityViolationIntegrationTest extends CruiseControlIntegr
 
   @Override
   public Map<Object, Object> overridingProps() {
-    return KafkaCruiseControlIntegrationTestUtils.createBrokerProps();
-    
-    //    props.put(CruiseControlMetricsReporterConfig.CRUISE_CONTROL_METRICS_REPORTER_INTERVAL_MS_CONFIG, "40000");
-    
+    Map<Object, Object> props = KafkaCruiseControlIntegrationTestUtils.createBrokerProps();
+    props.put(CruiseControlMetricsReporterConfig.CRUISE_CONTROL_METRICS_REPORTER_INTERVAL_MS_CONFIG, "15000");
+    return props;
   }
 
   @Override
@@ -78,10 +75,10 @@ public class ReplicaCapcaityViolationIntegrationTest extends CruiseControlIntegr
     Map<String, Object> configs = KafkaCruiseControlIntegrationTestUtils.ccConfigOverrides();
     configs.put(TopicReplicationFactorAnomalyFinder.SELF_HEALING_TARGET_TOPIC_REPLICATION_FACTOR_CONFIG, "2");
     
-    //    configs.put(MonitorConfig.METRIC_SAMPLING_INTERVAL_MS_CONFIG, "35000");
-    //    configs.put(MonitorConfig.METADATA_MAX_AGE_MS_CONFIG, "35000");
-    //    configs.put(MonitorConfig.METRIC_SAMPLING_INTERVAL_MS_CONFIG, "40000");
-    //    configs.put(AnomalyDetectorConfig.ANOMALY_DETECTION_INTERVAL_MS_CONFIG, "150000");
+    configs.put(CruiseControlMetricsReporterConfig.CRUISE_CONTROL_METRICS_REPORTER_INTERVAL_MS_CONFIG, "15000");
+    configs.put(MonitorConfig.METADATA_MAX_AGE_MS_CONFIG, "15000");
+    configs.put(MonitorConfig.METRIC_SAMPLING_INTERVAL_MS_CONFIG, "20000");
+    configs.put(AnomalyDetectorConfig.ANOMALY_DETECTION_INTERVAL_MS_CONFIG, "20000");
     
     configs.put(AnomalyDetectorConfig.ANOMALY_DETECTION_GOALS_CONFIG, new StringJoiner(",")
         .add(ReplicaCapacityGoal.class.getName())
@@ -102,7 +99,7 @@ public class ReplicaCapcaityViolationIntegrationTest extends CruiseControlIntegr
   }
 
   @Test
-  public void testRoleViolation() throws InterruptedException, ExecutionException {
+  public void testReplicaCapacityViolation() throws InterruptedException, ExecutionException {
     AdminClient adminClient = KafkaCruiseControlUtils.createAdminClient(Collections
         .singletonMap(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, broker(0).plaintextAddr()));
     try {

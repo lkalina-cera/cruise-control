@@ -232,7 +232,23 @@ project(':cruise-control') {
       }
     }
 
+    integrationTest {
+      java {
+        srcDirs = ["src/integrationTest/java"]
+      }
+      resources {
+        srcDirs = ['src/integrationTest/resources']
+      }
+      compileClasspath += main.output + test.output
+      runtimeClasspath += main.output + test.output
+    }
+
   }
+
+  configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntime.extendsFrom testRuntime
+   }
 
   dependencies {
     configurations.all {
@@ -350,6 +366,14 @@ project(':cruise-control') {
       receiptFile.setText(content, "ISO-8859-1")
     }
   }
+
+  task integrationTest(type: Test) {
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+  }
+
+  check.dependsOn integrationTest
+  compileIntegrationTestJava.dependsOn copyDependantLibs
 
   jar {
     dependsOn createVersionFile

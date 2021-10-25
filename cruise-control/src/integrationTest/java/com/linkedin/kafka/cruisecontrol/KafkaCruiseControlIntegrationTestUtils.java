@@ -18,6 +18,9 @@ import java.util.Random;
 import java.util.StringJoiner;
 import java.util.concurrent.ExecutionException;
 import java.util.function.BooleanSupplier;
+import com.jayway.jsonpath.Configuration;
+import com.jayway.jsonpath.spi.json.JacksonJsonProvider;
+import com.jayway.jsonpath.spi.mapper.JacksonMappingProvider;
 import com.linkedin.kafka.cruisecontrol.config.constants.AnomalyDetectorConfig;
 import com.linkedin.kafka.cruisecontrol.config.constants.MonitorConfig;
 import com.linkedin.kafka.cruisecontrol.detector.notifier.SelfHealingNotifier;
@@ -43,6 +46,14 @@ public final class KafkaCruiseControlIntegrationTestUtils {
   private static final Random RANDOM = new Random(0xDEADBEEF);
   private KafkaCruiseControlIntegrationTestUtils() {
 
+  }
+  /**
+   * Create JSON mapping configuration
+   * @return the mapping configuration
+   */
+  public static Configuration createJsonMappingConfig() {
+    return Configuration.builder().jsonProvider(new JacksonJsonProvider())
+      .mappingProvider(new JacksonMappingProvider()).build();
   }
   /**
    * Find a random open port
@@ -195,6 +206,7 @@ public final class KafkaCruiseControlIntegrationTestUtils {
         for (int i = 0; i < messageCount; i++) {
           RANDOM.nextBytes(randomRecords);
           producer.send(new ProducerRecord<>(topicName, Arrays.toString(randomRecords))).get();
+          producer.flush();
         }
       } catch (InterruptedException | ExecutionException e) {
         throw new RuntimeException(e);

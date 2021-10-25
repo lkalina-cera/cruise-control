@@ -18,8 +18,6 @@ import java.util.StringJoiner;
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.TypeRef;
-import com.jayway.jsonpath.spi.json.JacksonJsonProvider;
-import com.jayway.jsonpath.spi.mapper.JacksonMappingProvider;
 import com.linkedin.kafka.cruisecontrol.analyzer.goals.DiskCapacityGoal;
 import com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaCapacityGoal;
 import com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaDistributionGoal;
@@ -53,9 +51,7 @@ public class DiskFailureIntegrationTest extends CruiseControlIntegrationTestHarn
       "kafkacruisecontrol/" + CruiseControlEndPoint.STATE + "?substates=anomaly_detector&json=true";
   private static final String CRUISE_CONTROL_ANALYZER_STATE_ENDPOINT =
       "kafkacruisecontrol/" + CruiseControlEndPoint.STATE + "?substates=analyzer&json=true";
-  private static final Configuration GSON_JSON_CONFIG =
-      Configuration.builder().jsonProvider(new JacksonJsonProvider())
-          .mappingProvider(new JacksonMappingProvider()).build();
+  private final Configuration _gsonJsonConfig = KafkaCruiseControlIntegrationTestUtils.createJsonMappingConfig();
 
   private List<Entry<File, File>> _brokerLogDirs = new ArrayList<>(KAFKA_CLUSTER_SIZE);
   
@@ -118,7 +114,7 @@ public class DiskFailureIntegrationTest extends CruiseControlIntegrationTestHarn
           .callCruiseControl(_app.serverUrl(), CRUISE_CONTROL_KAFKA_CLUSTER_STATE_ENDPOINT);
       JSONArray partitionLeadersArray = JsonPath.<JSONArray>read(responseMessage,
           "$.KafkaPartitionState.other[?(@.topic == '" + TOPIC0 + "')].leader");
-      List<Integer> partitionLeaders = JsonPath.parse(partitionLeadersArray, GSON_JSON_CONFIG)
+      List<Integer> partitionLeaders = JsonPath.parse(partitionLeadersArray, _gsonJsonConfig)
           .read("$.*", new TypeRef<List<Integer>>() { });
       return partitionLeaders.size() == PARTITION_COUNT;
     }, 20, new AssertionError("Topic partitions not found for " + TOPIC0));
